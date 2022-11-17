@@ -10,24 +10,8 @@ dydt = zeros(nc*nm,1);
 for i=2:nc %iterate through tissues, excluding blood
     tissue_start = (i-1)*nm;
     
-    %% Convert k_ons and k_cs to (moles/cm^3 tissue) ^-1 s^-1
-    knames = fieldnames(p.k_on);
-    for j=1:9  % original k_on in M^-1s^-1
-        k_on.(knames{j}) = p.k_on.(knames{j}) * 1000 / p.K_AV(i);
-    end
-    for j=10:13 % original k_on in (moles/cm^2)^-1s^-1
-        k_on.(knames{j}) = p.k_on.(knames{j}) / p.ESAV(i);
-    end
-    % original k_c in (moles/cm^2)^-1s^-1
-    k_c.N1_R1 = p.k_c.N1_R1 / p.ESAV(i);
-    k_c.N2_R1 = p.k_c.N2_R1 / p.ESAV(i);
-    
-    %% Convert ligad secretion to moles/cm^3
-    q = p.q;
-    qnames = fieldnames(p.q);
-    for j=1:length(qnames)
-        q.(qnames{j}) = p.q.(qnames{j})(i) * p.PSAV(i) / (1e-5 * p.N_av);
-    end
+    %% Convert k_on, k_c, and secretion to biolofically relevant quantities
+    [k_on, k_c, q] = unit_conversions(p, i);
 
     %% Binding rates
     r_bind_Mecm_V165   = k_on.M_V165     * y(tissue_start + m.Mecm)    * y(tissue_start + m.V165) - p.k_off.M_V165     * y(tissue_start + m.Mecm_V165);
