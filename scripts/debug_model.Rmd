@@ -1,0 +1,385 @@
+---
+title: "Debugging the Model"
+author: "Maddie Gastonguay"
+date: "11/17/2022"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    theme: flatly
+    code_folding: hide
+---
+
+<style type="text/css">
+.main-container {
+max-width: 2400px;
+margin-left: auto;
+margin-right: auto;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,  warning=FALSE,message = FALSE)
+setwd("~/proj/VEGF_metastasis_model/")
+library(tidyverse)
+library(here)
+library(patchwork)
+theme_set(theme_classic())
+```
+
+```{r}
+# Define functions to convert to pM or to #/cell
+number_per_cell <- function(conc, tissue){
+  ESAV = ifelse(tissue == "main", 73, 105)
+  conc*6.0230e+23*1e-5/ESAV;
+}
+
+convert_to_pmol <- function(conc, tissue){
+  K_AV = ifelse(tissue == "primary", 0.58, 0.03)
+  conc/K_AV*1e15
+}
+
+quick_bar <- function(df, m,convert = "#/cell", tissue = "primary", position = "stack"){
+  converter = switch(convert, "#/cell" = number_per_cell, "pM" = convert_to_pmol)
+  y_lab = ifelse(position == "fill", "proportion", convert)
+  
+  df <- df %>% 
+    filter(compartment == tissue, grepl(m, molecule), q_V165 < 1e4) %>% 
+    group_by(q_V165) %>% 
+    filter(time == max(time)) %>% 
+    ungroup
+  
+  if(m == "V165"){
+    df <- df %>% pivot_wider(names_from = molecule, values_from = concentration) %>%  
+      group_by(q_V165) %>% 
+      summarise(Free = V165, 
+                `Bound to M` = sum(across(starts_with("M") & !contains("R"))), 
+                MVR = sum(across(starts_with("Mebm_V165_"))),
+                RVN = sum(across(starts_with("R2_V165_"))),
+                `Receptor Bound` = R1_V165 + R2_V165 + N1_V165 + N2_V165) %>% 
+      pivot_longer(!q_V165, names_to = "molecule", values_to = "concentration")
+  }
+  
+  df %>% 
+    mutate(value = converter(concentration, tissue)) %>% 
+    ggplot(aes("", value, fill = molecule)) + 
+    geom_bar(stat = "identity", position = position) + 
+    labs(x = "", y = y_lab, fill = "Complex",
+         title = str_interp("${m} in ${tissue}")) + 
+    facet_wrap(~q_V165, scales = "free_y") +
+  theme(legend.position = c(1,0), legend.justification = c(1,0))
+}
+```
+
+## Steady state values of original model parameters
+```{r}
+sec_debug <- read_csv(here("debug_results","simulation_results_debug_secretion.csv")) %>% 
+  filter(q_V165 <= 100)
+sec_debug_long <- sec_debug %>% 
+  pivot_longer(!c(q_V165, time), values_to = "concentration",
+               names_to = c("compartment", "molecule"), names_sep = "[.]")
+```
+
+At steady state, the majority of N1 and N2 are unbound:
+```{r}
+sec_debug_long %>%
+  filter(compartment == "primary", grepl("N1", molecule), q_V165 == 0.027, time == max(time)) %>%
+  ggplot(aes(x = "Total N1", y = number_per_cell(concentration, compartment), fill = molecule)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(y = "#/cell",  x = "") +
+  sec_debug_long %>%
+  filter(compartment == "primary", grepl("N2", molecule), q_V165 == 0.027, time == max(time)) %>%
+  ggplot(aes(x = "Total N2", y = number_per_cell(concentration, compartment), fill = molecule)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(y = "#/cell", x = "") +
+  plot_annotation(title = "Location of N1 and N2 in Primary Tumor with original model parameters")
+```
+
+At steady state, the majority of R1 is bound to either N1 or N2:
+```{r}
+sec_debug_long %>%
+  filter(compartment == "primary", grepl("R1", molecule), q_V165 == 0.027, time == max(time)) %>%
+  ggplot(aes(x = "Total R1", y = number_per_cell(concentration, compartment), fill = molecule)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(y = "#/cell", title = "Location of R1 in Primary Tumor with original model parameters", x = "")
+```
+
+With the original model parameters, **there is very little R2 binding at steady state**:
+```{r}
+sec_debug_long %>%
+  filter(compartment == "primary", grepl("R2", molecule), q_V165 == 0.027, time == max(time)) %>%
+  ggplot(aes(x = "Total R2", y = number_per_cell(concentration, compartment), fill = molecule)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(y = "#/cell", title = "Location of R2 in Primary Tumor with original model parameters", x = "")
+```
+
+The original secretion value for V165 is 0.027 molecules/cell, which results in a steady state value of around 0.3pM of free V165 and 0.6pM total V165.
+```{r}
+sec_debug_long %>%
+  filter(compartment == "primary", grepl("V165", molecule), q_V165 == 0.027, time == max(time)) %>%
+  ggplot(aes(x = "Total V165", y = convert_to_pmol(concentration, compartment), fill = molecule)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(y = "#/cell", title = "Location of V165 in Primary Tumor with original model parameters", x = "")
+```
+
+
+## Effect of increasing secretion of $VEGF_{165}$
+The low concentration of V165 lead us to consider if increasing VEGF secretion would increase R2 binding. We simulated with secretion values of 0.27, 1, 10, and 100 molecules/cell. The resultant incerase in V165 concentration is as follows:
+```{r}
+sec_debug %>%
+  filter(q_V165 < 1e3) %>%
+  ggplot(aes(time, primary.V165/0.58*1e15,
+             color = as.factor(q_V165  * 1534 / (1e-5 * 6.023e23)))) +
+  geom_line() +
+  labs(x = "time", y = "V165 pM", color = "Secretion (moles/cm^3 tissue)",
+       title = "Concentration of V165 in Primary tumor") +
+  facet_wrap(~as.factor(q_V165), scales = "free_y") +
+  theme(legend.position = c(1,0), legend.justification = c(1,0))
+
+quick_bar(sec_debug_long, "V165",  "pM")
+```
+
+Increased V165 secretion lead to increased R2 binding, but it also lead to a rapid decrease in the total amount of R2:
+```{r}
+quick_bar(sec_debug_long , "R2")
+```
+
+## Simulations without Neuropilin
+The decrease in R2 may be a result of the internalization of R2-V165-N being an order of magnitude greater than that of R2 alone. To test this, we simulated the model without any neuropilin and see that the total amount of R2 stays at the target value until V165 secretion reaches 100 molecules/cell. This indicates that the reason for the decrease in total R2 is likely the increased internalization of R2-V165-N compared to free R2.
+```{r}
+sec_debug6 <- read_csv(here("debug_results","simulation_results_debug_secretion_no_N.csv"))
+sec_debug_long6 <- sec_debug6 %>%
+  pivot_longer(!c(q_V165, time), values_to = "concentration",
+               names_to = c("compartment", "molecule"), names_sep = "[.]")
+
+quick_bar(sec_debug_long6 , "R2")
+```
+
+```{r}
+comp_df <- merge(
+  sec_debug %>%
+    group_by(q_V165) %>%
+    filter(time == max(time)) %>%
+    select(-time) %>%
+    pivot_longer(!q_V165, names_to = c("tissue", "molecule"), names_sep = "[.]",
+                 values_to = "orig"),
+  
+  sec_debug6 %>%
+    group_by(q_V165) %>%
+    filter(time == max(time)) %>%
+    select(-time) %>%
+    pivot_longer(!q_V165, names_to = c("tissue", "molecule"), names_sep = "[.]",
+                 values_to = "noN"),
+  
+  by = c("q_V165", "tissue", "molecule")
+)
+```
+
+```{r}
+comp_df %>%
+  filter(tissue == "primary", grepl("R2", molecule)) %>%
+  mutate(orig = number_per_cell(orig, tissue), noN = number_per_cell(noN, tissue)) %>%
+  ggplot(aes(orig, noN, color = molecule)) +
+  geom_abline(lty = "dashed") +
+  geom_text(aes(label = molecule)) +
+  facet_wrap(~q_V165, scales = "free", labeller = "label_both") +
+  labs(x = "#/cell with Original Model Parameters",
+       y = "#/cell with no Neuropilin",
+       title = "Compare Amount of R2 at steady state between Simulations") +
+  theme(legend.position = c(1,0), legend.justification = c(1,0))
+```
+
+Zooming in to the bottom of the above plot, we also see an increase in R2-V165 binding:
+```{r}
+comp_df %>%
+  filter(tissue == "primary", grepl("R2", molecule)) %>%
+  mutate(orig = number_per_cell(orig, tissue), noN = number_per_cell(noN, tissue), molceule = factor(molecule)) %>% 
+  filter(molecule != "R2") %>%
+  ggplot(aes(orig, noN, color = molecule)) +
+  geom_abline(lty = "dashed") +
+  geom_text(aes(label = molecule)) +
+  facet_wrap(~q_V165, scales = "free", labeller = "label_both") +
+  labs(x = "#/cell with Original Model Parameters",
+       y = "#/cell with no Neuropilin",
+       title = "Compare Amount of R2 at steady state between Simulations") +
+  scale_color_discrete(drop = FALSE) +
+  theme(legend.position = c(1,0), legend.justification = c(1,0))
+```
+
+In addition, we see an increase in free R1, because it is mostly bound to N1 or N2 at steady state with the original model parameters:
+```{r}
+quick_bar(sec_debug_long6, "R1") + ggtitle("R1 in Primary Tumor when no Neuropilin")
+comp_df %>%
+  filter(tissue == "primary", grepl("R1", molecule)) %>%
+  mutate(orig = number_per_cell(orig, tissue), noN = number_per_cell(noN, tissue)) %>%
+  ggplot(aes(orig, noN, color = molecule)) +
+  geom_abline(lty = "dashed") +
+  geom_text(aes(label = molecule)) +
+  facet_wrap(~q_V165, scales = "free", labeller = "label_both") +
+  labs(x = "#/cell with Original Model Parameters",
+       y = "#/cell with no Neuropilin",
+       title = "Compare Amount of R1 at stteady state between Simulations") +
+  theme(legend.position = c(1,0), legend.justification = c(1,0))
+```
+
+The distribution of VEGF165 throughout the cell looks similar to the original simulations.
+```{r}
+sec_debug6 %>%
+  ggplot(aes(time, primary.V165/0.58*1e15,
+             color = as.factor(q_V165  * 1534 / (1e-5 * 6.023e23)))) +
+  geom_line() +
+  labs(x = "time", y = "V165 pM", color = "Secretion (moles/cm^3 tissue)",
+       title = "Concentration of Free V165 at in Primary tumor") +
+  facet_wrap(~as.factor(q_V165), scales = "free_y") +
+  theme(legend.position = c(1,0), legend.justification = c(1,0))
+
+quick_bar(sec_debug_long6, "V165",  "pM")
+```
+
+```{r}
+comp_df %>%
+  filter(tissue == "primary", grepl("V165", molecule)) %>%
+  mutate(orig = 0.58*1e15*orig, noN = 0.58*1e15*noN) %>%
+  ggplot(aes(orig, noN, color = molecule)) +
+  geom_abline(lty = "dashed") +
+  geom_text(aes(label = molecule)) +
+  facet_wrap(~q_V165, scales = "free", labeller = "label_both") +
+  labs(x = "Concentration with Original Model Parameters (pM)",
+       y = "Concentration with no Neuropilin (pM)",
+       title = "Compare concentration of V165 at steady state between simulations") 
+```
+
+## Increasing the amount of R2
+The target amount of R2 is 300 molecules/cell while that of R1 is 3000. To see if the small amount of R2 accounts for decreased binding, we simulated the model with increasing values of R2 production rates (baseline = 1.4E-17). We expect free V165 to decrease as R2 binding increases, which we see below.
+
+```{r}
+sec_debug2 <- read_csv(here("debug_results","simulation_results_debug_R2.csv"))
+sec_debug_long2 <- sec_debug2 %>%
+  pivot_longer(!c(q_V165, kprod_R2, time), values_to = "concentration",
+               names_to = c("compartment", "molecule"), names_sep = "[.]")
+
+sec_debug2 %>%
+  ggplot(aes(time, primary.V165/0.58*1e15,
+             color = as.factor(kprod_R2))) +
+  geom_line() +
+  labs(x = "time", y = "V165 pM",
+       title = "Concentration of Free V165 in Primary tumor",
+       color = "kprod_R2") +
+  facet_wrap(~q_V165, scales = "free_y", labeller = "label_both")+
+  theme(legend.position = c(1,0), legend.justification = c(1,0))
+
+sec_debug2 %>%
+  ggplot(aes(time, number_per_cell(primary.R2, "primary"),
+             color = as.factor(kprod_R2))) +
+  geom_line() +
+  labs(x = "time", y = "# R2/cell",
+       title = "Concentration of Free R2 in Primary tumor",
+       color = "kprod_R2") +
+  facet_wrap(~q_V165, scales = "free_y", labeller = "label_both")+
+  theme(legend.position = c(1,0), legend.justification = c(1,0))
+
+sec_debug2 %>%
+  ggplot(aes(time, number_per_cell(primary.R2_V165 + primary.R2_V165_N1 + primary.R2_V165_N2, "primary"),
+             color = as.factor(kprod_R2))) +
+  geom_line() +
+  labs(x = "time", y = "# Bound R2/cell",
+       title = "Concentration of Bound R2 in Primary tumor",
+       color = "kprod_R2") +
+  facet_wrap(~q_V165, scales = "free_y", labeller = "label_both")+
+  theme(legend.position = c(1,0), legend.justification = c(1,0))
+
+
+sec_debug_long2 %>%
+  filter(compartment == "primary", grepl("R2", molecule)) %>%
+  group_by(q_V165, kprod_R2) %>%
+  filter(time == max(time)) %>%
+  ggplot(aes(x = as.factor(q_V165), y = number_per_cell(concentration, compartment), fill = molecule)) +
+  geom_bar(stat = "identity", position = "stack") +
+  facet_wrap(~kprod_R2, scales = "free_y", labeller = "label_both") +
+  labs( y = "# of R2/cell", title = "Amount of R2 at varying parameter values", x = "V165 Secretion")
+
+sec_debug_long2 %>%
+  filter(compartment == "primary", grepl("V165", molecule)) %>%
+  group_by(q_V165, kprod_R2) %>%
+  filter(time == max(time)) %>%
+  ggplot(aes(x = as.factor(kprod_R2), y = convert_to_pmol(concentration, compartment), fill = molecule)) +
+  geom_bar(stat = "identity", position = "stack") +
+  facet_wrap(~q_V165, scales = "free_y", labeller = "label_both") +
+  labs(x = "kprod_R2", y = "V165 concentration (pM)", title = "Concentration of Free V165 at varying parameter values")
+
+sec_debug2 %>% mutate(x = primary.R2_V165 + primary.R2_V165_N1 + primary.R2_V165_N2, y = primary.V165) %>%
+  group_by(q_V165, kprod_R2) %>% filter(time == max(time))  %>%
+  ggplot(aes(convert_to_pmol(x, "primary"),convert_to_pmol(y, "primary"), color = log(kprod_R2))) +
+  geom_point() + facet_wrap(~q_V165, scales = "free") +
+  labs(x = "Concentration of bound R2 (pM)", y = "Concentration of free V165 (pM)",
+       title = "Steady state concentrations at varying parameter values")+
+  theme(legend.position = c(1,0), legend.justification = c(1,0))
+```
+
+## Simulations with no cross talk between compartments
+We also ran simulations without permeability or lymphatic drainage to confirm the behavior of the pimary tumor compartment is as expected. We see similar trends to the model with cross-talk between compartments, but with overall higher concentrations as we would expect. Simulations with q_V165 = 10 and 100 did not reach steady state, but I did not continue running them because they produce unrealistic concentrations of V165.
+
+```{r}
+sec_debug3 <- read_csv(here("debug_results","simulation_results_debug_R2_no_perm.csv"))
+sec_debug_long3 <- sec_debug3 %>%
+  pivot_longer(!c(q_V165, kprod_R2, time), values_to = "concentration",
+               names_to = c("compartment", "molecule"), names_sep = "[.]")
+
+sec_debug3 %>%
+  ggplot(aes(time, primary.V165/0.58*1e15,
+             color = as.factor(kprod_R2))) +
+  geom_line() +
+  labs(x = "time", y = "V165 pM",
+       title = "Concentration of Free V165 in Primary tumor",
+       color = "kprod_R2") +
+  facet_wrap(~q_V165, scales = "free_y", labeller = "label_both")+
+  theme(legend.position = c(1,0), legend.justification = c(1,0))
+
+
+sec_debug3 %>%
+  ggplot(aes(time, number_per_cell(primary.R2, "primary"),
+             color = as.factor(kprod_R2))) +
+  geom_line() +
+  labs(x = "time", y = "# R2/cell",
+       title = "Concentration of Free R2 in Primary tumor",
+       color = "kprod_R2") +
+  facet_wrap(~q_V165, scales = "free_y", labeller = "label_both")+
+  theme(legend.position = c(1,0), legend.justification = c(1,0))
+
+sec_debug3 %>%
+  ggplot(aes(time, number_per_cell(primary.R2_V165 + primary.R2_V165_N1 + primary.R2_V165_N2, "primary"),
+             color = as.factor(kprod_R2))) +
+  geom_line() +
+  labs(x = "time", y = "# Bound R2/cell",
+       title = "Concentration of Bound R2 in Primary tumor",
+       color = "kprod_R2") +
+  facet_wrap(~q_V165, scales = "free_y", labeller = "label_both")+
+  theme(legend.position = c(1,0), legend.justification = c(1,0))
+
+sec_debug_long3 %>%
+  filter(compartment == "primary", grepl("R2", molecule)) %>%
+  group_by(q_V165, kprod_R2) %>%
+  filter(time == max(time)) %>%
+  ggplot(aes(x = as.factor(q_V165), y = number_per_cell(concentration, compartment), fill = molecule)) +
+  geom_bar(stat = "identity", position = "stack") +
+  facet_wrap(~kprod_R2, scales = "free_y", labeller = "label_both") +
+  labs( y = "# R2/cell", title = "Amount of R2 at varying parameter values", x = "V165 Secretion")
+
+sec_debug_long3 %>%
+  filter(compartment == "primary", grepl("V165", molecule)) %>%
+  group_by(q_V165, kprod_R2) %>%
+  filter(time == max(time)) %>%
+  ggplot(aes(x = as.factor(kprod_R2), y = convert_to_pmol(concentration, compartment), fill = molecule)) +
+  geom_bar(stat = "identity", position = "stack") +
+  facet_wrap(~q_V165, scales = "free_y", labeller = "label_both") +
+  labs(x = "kprod_R2", y = "V165 concentration (pM)", title = "Concentration of Free V165 at varying parameter values")
+
+sec_debug3 %>% mutate(x = primary.R2_V165 + primary.R2_V165_N1 + primary.R2_V165_N2, y = primary.V165) %>%
+  group_by(q_V165, kprod_R2) %>% filter(time == max(time))  %>%
+  ggplot(aes(convert_to_pmol(x, "primary"),convert_to_pmol(y, "primary"), color = log(kprod_R2))) +
+  geom_point() + facet_wrap(~q_V165, scales = "free") +
+  labs(x = "Concentration of bound R2 (pM)", y = "Concentration of free V165 (pM)",
+       title = "Steady state concentrations at varying parameter values")+
+  theme(legend.position = c(1,0), legend.justification = c(1,0))
+```
