@@ -10,7 +10,7 @@ dydt = zeros(nc*nm,1);
 for i=2:nc %iterate through tissues, excluding blood
     tissue_start = (i-1)*nm;
     
-    %% Convert k_on, k_c, and secretion to biolofically relevant quantities
+    %% Convert k_on, k_c, and secretion to biologically relevant quantities
     [k_on, k_c, q] = unit_conversions(p, i);
 
     %% Binding rates
