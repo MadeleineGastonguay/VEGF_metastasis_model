@@ -13,15 +13,15 @@ output:
 
 <style type="text/css">
 .main-container {
-max-width: 2400px;
+max-width: 3000px;
 margin-left: auto;
 margin-right: auto;
 }
 </style>
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE,  warning=FALSE,message = FALSE)
-setwd("~/proj/VEGF_metastasis_model/")
+knitr::opts_chunk$set(echo = TRUE,  warning=FALSE,message = FALSE, out.width = '100%')
+# setwd("~/proj/VEGF_metastasis_model/")
 library(tidyverse)
 library(here)
 library(patchwork)
@@ -120,7 +120,7 @@ sec_debug_long %>%
   filter(compartment == "primary", grepl("V165", molecule), q_V165 == 0.027, time == max(time)) %>%
   ggplot(aes(x = "Total V165", y = convert_to_pmol(concentration, compartment), fill = molecule)) +
   geom_bar(stat = "identity", position = "stack") +
-  labs(y = "#/cell", title = "Location of V165 in Primary Tumor with original model parameters", x = "")
+  labs(y = "Concentration (pM)", title = "Location of V165 in Primary Tumor with original model parameters", x = "")
 ```
 
 
@@ -133,11 +133,11 @@ sec_debug %>%
              color = as.factor(q_V165  * 1534 / (1e-5 * 6.023e23)))) +
   geom_line() +
   labs(x = "time", y = "V165 pM", color = "Secretion (moles/cm^3 tissue)",
-       title = "Concentration of V165 in Primary tumor") +
+       title = "Concentration of Free V165 in Primary tumor") +
   facet_wrap(~as.factor(q_V165), scales = "free_y") +
   theme(legend.position = c(1,0), legend.justification = c(1,0))
 
-quick_bar(sec_debug_long, "V165",  "pM")
+quick_bar(sec_debug_long, "V165",  "pM") + xlab("Total V165")
 ```
 
 Increased V165 secretion lead to increased R2 binding, but it also lead to a rapid decrease in the total amount of R2:
@@ -174,9 +174,7 @@ comp_df <- merge(
   
   by = c("q_V165", "tissue", "molecule")
 )
-```
 
-```{r}
 comp_df %>%
   filter(tissue == "primary", grepl("R2", molecule)) %>%
   mutate(orig = number_per_cell(orig, tissue), noN = number_per_cell(noN, tissue)) %>%
@@ -274,7 +272,7 @@ sec_debug2 %>%
              color = as.factor(kprod_R2))) +
   geom_line() +
   labs(x = "time", y = "# R2/cell",
-       title = "Concentration of Free R2 in Primary tumor",
+       title = "Amount of Free R2 in Primary tumor",
        color = "kprod_R2") +
   facet_wrap(~q_V165, scales = "free_y", labeller = "label_both")+
   theme(legend.position = c(1,0), legend.justification = c(1,0))
@@ -284,7 +282,7 @@ sec_debug2 %>%
              color = as.factor(kprod_R2))) +
   geom_line() +
   labs(x = "time", y = "# Bound R2/cell",
-       title = "Concentration of Bound R2 in Primary tumor",
+       title = "Amount of Bound R2 in Primary tumor",
        color = "kprod_R2") +
   facet_wrap(~q_V165, scales = "free_y", labeller = "label_both")+
   theme(legend.position = c(1,0), legend.justification = c(1,0))
@@ -342,7 +340,7 @@ sec_debug3 %>%
              color = as.factor(kprod_R2))) +
   geom_line() +
   labs(x = "time", y = "# R2/cell",
-       title = "Concentration of Free R2 in Primary tumor",
+       title = "Amount of Free R2 in Primary tumor",
        color = "kprod_R2") +
   facet_wrap(~q_V165, scales = "free_y", labeller = "label_both")+
   theme(legend.position = c(1,0), legend.justification = c(1,0))
@@ -352,7 +350,7 @@ sec_debug3 %>%
              color = as.factor(kprod_R2))) +
   geom_line() +
   labs(x = "time", y = "# Bound R2/cell",
-       title = "Concentration of Bound R2 in Primary tumor",
+       title = "Amount of Bound R2 in Primary tumor",
        color = "kprod_R2") +
   facet_wrap(~q_V165, scales = "free_y", labeller = "label_both")+
   theme(legend.position = c(1,0), legend.justification = c(1,0))
