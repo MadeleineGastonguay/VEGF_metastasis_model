@@ -1,4 +1,4 @@
-function [c,m,p,cnames,mnames,pnames,initconc] = declareParams_multi_tissue_VEGF();
+function [c,m,p,cnames,mnames,pnames,initconc] = declareParams_multi_tissue_VEGF_debug();
 %% Declare tissue compartments (and order in arrays)
 c.blood = 1;
 c.main = 2;
@@ -149,14 +149,14 @@ p.q.V165 = ones(length(cnames), 1)*0.027; % source: Bender 2015, units: #/cell/s
 
 % Lymphatic drainage: tissue specific 
 p.k_l = zeros(length(cnames),1);
-p.k_l(c.main) = 0.1418; %cm^3/s % NEED TO FIND VALUE FOR MET AND PRIMARY TUMOR
-p.k_l(c.primary) = 0.1418; %cm^3/s % NEED TO FIND VALUE FOR MET AND PRIMARY TUMOR
+p.k_l(c.main) = 0.1418; %cm^3/s 
+p.k_l(c.primary) = 1.79e-5; %cm^3/s %Source: Feilim claculated it
 
 % Permeability parameters: depend on tissue but assumed to be the same for
 % each molecule. unit: cm/s
 p.k_p = zeros(length(cnames),1);
 p.k_p(c.main) = 4.39E-8;
-p.k_p(c.primary) = 4.39E-8;
+p.k_p(c.primary) = 4E-7; %Source: Stefanini 2010
 
 % Clearance from blood: assumed same for all molecules
 p.k_cl = 1.08E-3;
@@ -168,12 +168,12 @@ p.k_cl = 1.08E-3;
 p.U = ones(length(cnames),1);
 p.U(c.blood) = 5000; %5 Litres = 5000 cm^3
 p.U(c.main) = 60453;
-p.U(c.primary) = 6.4; %Taken from Konyalioglu et al
+p.U(c.primary) = 6.4; %taken from prostate tumor paper
 
 % Fraction of interstitial space or plasma
 p.K_AV = zeros(length(cnames),1);
 p.K_AV(c.blood) = 0.6;
-p.K_AV(c.main) = 0.03;
+p.K_AV(c.main) = 0.0816; %From Stephanini 2008
 p.K_AV(c.primary) = 0.58; %From Bender 2015
 
 % Parameters to convert between measured receptor levels of number per cell
