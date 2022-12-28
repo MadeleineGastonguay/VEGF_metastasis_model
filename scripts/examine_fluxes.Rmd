@@ -1,0 +1,596 @@
+---
+title: "Examine fluxes"
+author: "Maddie Gastonguay"
+date: "11/23/2022"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    theme: flatly
+    code_folding: hide
+---
+
+<style type="text/css">
+.main-container {
+max-width: 5000px;
+margin-left: auto;
+margin-right: auto;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,  warning=FALSE,message = FALSE, out.width = '100%')
+setwd("~/proj/VEGF_metastasis_model/")
+library(tidyverse)
+library(here)
+library(patchwork)
+library(ggnewscale)
+theme_set(theme_classic())
+```
+
+```{r}
+# Define functions to convert to pM or to #/cell
+number_per_cell <- function(conc, tissue){
+  ESAV = ifelse(tissue == "main", 73, 105)
+  conc*6.0230e+23*1e-5/ESAV;
+}
+
+convert_to_pmol <- function(conc, tissue){
+  K_AV = ifelse(tissue == "primary", 0.58, 0.03)
+  conc/K_AV*1e15
+}
+
+convert_secretion_mol_per_cm3_tissue <- function(q_V165, tissue = "primary"){
+  q_V165  * 1534 / (1e-5 * 6.023e23)
+}
+
+quick_bar <- function(df, m,convert = "#/cell", tissue = "primary", position = "stack"){
+  converter = switch(convert, "#/cell" = number_per_cell, "pM" = convert_to_pmol)
+  y_lab = ifelse(position == "fill", "proportion", convert)
+  
+  df <- df %>% 
+    filter(compartment == tissue, grepl(m, molecule), q_V165 < 1e4) %>% 
+    group_by(q_V165) %>% 
+    filter(time == max(time)) %>% 
+    ungroup
+  
+  if(m == "V165"){
+    df <- df %>% pivot_wider(names_from = molecule, values_from = concentration) %>%  
+      group_by(q_V165) %>% 
+      summarise(Free = V165, 
+                `Bound to M` = sum(across(starts_with("M") & !contains("R"))), 
+                MVR = sum(across(starts_with("Mebm_V165_"))),
+                RVN = sum(across(starts_with("R2_V165_"))),
+                `Receptor Bound` = R1_V165 + R2_V165 + N1_V165 + N2_V165) %>% 
+      pivot_longer(!q_V165, names_to = "molecule", values_to = "concentration")
+  }
+  
+  df %>% 
+    mutate(value = converter(concentration, tissue)) %>% 
+    ggplot(aes("", value, fill = molecule)) + 
+    geom_bar(stat = "identity", position = position) + 
+    labs(x = "", y = y_lab, fill = "Complex",
+         title = str_interp("${m} in ${tissue}")) + 
+    facet_wrap(~q_V165, scales = "free_y") +
+    theme(legend.position = c(1,0), legend.justification = c(1,0))
+}
+```
+
+
+## Fluxes into and out of the primary tumor compartment.
+Using the original model parameters, I calculated secretion, lymphatic drainage, internalization, and permeability at steady state. Fluxes were normalized by dividing by the rate of secretion (ie. a value of 1 indicates that it is equal to the rate of secretion). I found that with the original model parameters, lymphatic drainage was almost equal to secretion unless the rate of R2 production was very large. This indicates that the majority of VEGF being secreted is carried out of the tissue without the chance to bind, which is not what we want.
+
+```{r}
+fluxes <- read_csv(here("debug_results", "calculate_fluxes.csv")) %>%
+  mutate(q_V165 = factor(q_V165), kprod_R2 = factor(kprod_R2))
+
+# Plotting function
+plot_norm_flux <- function(flux){
+  flux %>%
+    pivot_longer(4:6) %>%
+    mutate(norm_value = abs(value/Secretion)) %>%
+    ggplot(aes(kprod_R2, norm_value, color = name)) +
+    geom_point(size = 3) +
+    facet_wrap(~q_V165, labeller= "label_both")  +
+    labs(x = "Production of R2 (moles/cm^3 tissue)", y = "Normalized Flux", color = "Flux") +
+    theme(legend.position = c(1,0), legend.justification = c(1,0))
+}
+
+
+plot_norm_flux(fluxes)
+
+```
+
+I took a closer look at the parameters for lymphatic drainage, $\frac{k_l}{U}\frac{[V_{165}]}{K_{AV}}$, and realized that I was using the $k_l$ value for the main body from Lindsey's 2017 paper (0.1418 cm^3/s). I found another paper from the lab that parameterized the third compartment as a tumor instead of a calf muscle ([Stefanini et al. 2010](https://aacrjournals.org/cancerres/article/70/23/9886/561204/Increase-of-Plasma-VEGF-after-Intravenous)) and used the lymphatic drainage of 120 mL/hour (0.033 cm^3/s) from that. I also noticed that the volume I found for the average size of primary prostate tumor (6.4 cm^3, [Konyalioglu et al. 2015](https://pubmed.ncbi.nlm.nih.gov/26200537/)) was much less than the volume of the calf compartment in Lindsey's paper (868 cm^3). I increased the volume to 33 cm^3 according to the volume of the tumor compartment in [Stefanini et al. 2008](https://bmcsystbiol.biomedcentral.com/articles/10.1186/1752-0509-2-77). These edits reduce $\frac{k_l}{U\cdot K_{AV}}$ from 0.0382 to 0.0018. However, $\frac{k_l}{U\cdot K_{AV}}$ for the calf compartment in Lindsey's paper is $\frac{0.0026}{868\cdot 0.11} = 2.72e-5$, which is still smaller than the value in our model. I re-calculated the fluxes using these updated parameters and now the lymphatic drainage is only half of the secretion with the baseline VEGF secretion and R2 production. When VEGF secretion is so big that the ligand cannot be controlled quickly enough (q_V165 >= 10 molecules/cell), the lymphatic drainage is greater than internalization unless there is a lot of R2 production.
+
+```{r}
+new_param_fluxes <- read_csv(here("debug_results", "calculate_fluxes_new_transport.csv")) %>%
+  mutate(q_V165 = factor(q_V165), kprod_R2 = factor(kprod_R2))
+
+plot_norm_flux(new_param_fluxes) +
+  ggtitle("Fluxes with new model parameters")
+
+```
+
+## Concentration profiles of V165 and R2
+I examined the concentration profiles of V165 and R2 with the new model parameters.
+```{r}
+orig_simulations <- read_csv(here("debug_results", "simulation_results_debug_R2.csv"))
+new_simulations <- read_csv(here("debug_results", "simulation_results_debug_R2_new_transport.csv"))
+
+orig_simulations_long <- orig_simulations %>%
+  pivot_longer(!c(q_V165, kprod_R2, time), values_to = "concentration",
+               names_to = c("compartment", "molecule"), names_sep = "[.]")
+new_simulations_long <- new_simulations %>%
+  pivot_longer(!c(q_V165, kprod_R2, time), values_to = "concentration",
+               names_to = c("compartment", "molecule"), names_sep = "[.]")
+```
+
+### Free V165
+
+The concentration of free V165 with the baseline secretion and R2 production increased from 0.3 to 3 pM. In addition, there is a greater decrease in V165 concentration as R2 production increases.
+
+```{r}
+orig_free_V165 <- orig_simulations %>%
+  ggplot(aes(time, convert_to_pmol(primary.V165, "primary"), color = as.factor(kprod_R2))) +
+  geom_line() +
+  facet_wrap(~q_V165, labeller = "label_both", scales = "free_y", nrow = 1) +
+  ggtitle("Original Parameters")
+
+new_free_V165 <- new_simulations %>%
+  ggplot(aes(time, convert_to_pmol(primary.V165, "primary"), color = as.factor(kprod_R2))) +
+  geom_line() +
+  facet_wrap(~q_V165, labeller = "label_both", scales = "free_y", nrow = 1) +
+  ggtitle("Updated Parameters")
+
+orig_free_V165 + new_free_V165 +
+  plot_layout(nrow = 2, guides= "collect") &
+  labs(y = "Free V165 (pM)", x = "time (s)", color = "R2 Production Rate")
+
+```
+
+```{r}
+quick_bar <- function(df_long, m, tissue = "primary", pos = "stack", convert = "pM", x = NULL, scales = "free_y", outline = NULL){
+  if(is.null(x)) x <- ifelse(m == "V165", "kprod_R2", "q_V165")
+  facet = c("kprod_R2", "q_V165")[c("kprod_R2", "q_V165") != x]
+  
+  x_lab = switch(x, "kprod_R2" = "R2 Production (moles/cm^3 tissue)", "q_V165" = "V165 Secretion (#/cell)")
+  y_lab = switch(pos, "stack" = str_interp("${m} (${convert})"), "fill" = str_interp("Fraction of ${m}"))
+  converter = switch(convert, "pM" = convert_to_pmol, "#/cell" = number_per_cell)
+  
+  p <- df_long %>%
+    group_by(q_V165, kprod_R2) %>%
+    filter(time == max(time), grepl(m, molecule), compartment == tissue) %>%
+    ggplot(aes_string(str_interp("as.factor(${x})"), "converter(concentration, tissue)", fill = "molecule")) +
+    facet_wrap(as.formula(paste0("~", facet)), scales = scales, nrow = 1, labeller = "label_both") +
+    labs(x = x_lab, y = y_lab)
+  
+  if(!is.null(outline)){
+    p + geom_bar(stat = "identity", pos = pos, aes(color = grepl(outline, molecule)))  +
+      scale_color_manual(values = c("TRUE" = "black", "FALSE" = NULL)) +
+      labs(color = "R2 Complex")
+  }else{
+    p + geom_bar(stat = "identity", pos = pos)
+  }
+}
+```
+
+The breakdown of total V165 concentration is as follows, with the black outline denoting V165 in a complex with R2.
+
+```{r}
+quick_bar(orig_simulations_long, "V165", outline = "R2") +
+  labs(x = "", title = "Original Parameters") +
+  quick_bar(new_simulations_long, "V165", outline = "R2") +
+  labs( title = "Updated Parameters") +
+  plot_layout(nrow = 2, guides = "collect") &
+  theme(panel.grid.major.y = element_line())
+```
+
+I also looked at the fraction of V165 in each complex:
+```{r}
+quick_bar(orig_simulations_long, "V165", outline = "R2", pos = "fill") +
+  labs(x = "", title = "Original Parameters") +
+  quick_bar(new_simulations_long, "V165", outline = "R2", pos = "fill") +
+  labs( title = "Updated Parameters") +
+  plot_layout(nrow = 2, guides = "collect") &
+  theme(panel.grid.major.y = element_line())
+```
+
+### Bound R2
+
+We see an increase in bound R2 compared to the original model parameters, as we would expect given the increased internalization flux.
+
+```{r}
+orig_bound_R2 <- orig_simulations %>%
+  rowwise %>%
+  mutate(bound_R2 = sum(c_across(starts_with("primary") & contains("R2") & contains("_")))
+  ) %>%
+  ggplot(aes(time, number_per_cell(bound_R2, "primary"), color = as.factor(kprod_R2))) +
+  geom_line() +
+  facet_wrap(~q_V165, labeller = "label_both", scales = "free_y", nrow = 1)
+
+new_bound_R2 <- new_simulations %>%
+  rowwise %>%
+  mutate(bound_R2 = sum(c_across(starts_with("primary") & contains("R2") & contains("_")))
+  ) %>%
+  ggplot(aes(time, number_per_cell(bound_R2, "primary"), color = as.factor(kprod_R2))) +
+  geom_line() +
+  facet_wrap(~q_V165, labeller = "label_both", scales = "free_y", nrow = 1)
+
+orig_bound_R2 + new_bound_R2 +
+  plot_layout(nrow = 2, guides= "collect") &
+  labs(y = "Bound R2 (#/cell)", x = "time (s)", color = "R2 Production Rate")
+```
+
+
+There is an increase in the fraction of R2 bound, but there still isn't very bound with the baseline secretion and R2 production rates:
+```{r}
+quick_bar(orig_simulations_long, "R2", convert = "#/cell") +
+  labs(x = "", title = "Original Parameters") +
+  quick_bar(new_simulations_long, "R2", convert = "#/cell") +
+  labs( title = "Updated Parameters") +
+  plot_layout(nrow = 2, guides = "collect") &
+  theme(panel.grid.major.y = element_line())
+
+quick_bar(orig_simulations_long %>% filter(molecule != "R2"), "R2", convert = "#/cell") +
+  labs(x = "", title = "Original Parameters") +
+  quick_bar(new_simulations_long  %>% filter(molecule != "R2"), "R2", convert = "#/cell") +
+  labs( title = "Updated Parameters") +
+  plot_layout(nrow = 2, guides = "collect") &
+  theme(panel.grid.major.y = element_line()) &
+  labs(y = "Bound R2 (#/cell)")
+
+quick_bar(orig_simulations_long, "R2", convert = "#/cell", pos = "fill") +
+  labs(x = "", title = "Original Parameters") +
+  quick_bar(new_simulations_long, "R2", convert = "#/cell", pos = "fill") +
+  labs( title = "Updated Parameters") +
+  plot_layout(nrow = 2, guides = "collect") &
+  theme(panel.grid.major.y = element_line())
+```
+
+
+### Free R2
+With the new model parameters, the amount of free R2 behaves more closely to the model with no permeability/lymphatic drainage when VEGF secretion and R2 production are large.
+
+```{r}
+orig_free_R2 <- orig_simulations %>%
+  ggplot(aes(time, number_per_cell(primary.R2, "primary"), color = as.factor(kprod_R2))) +
+  geom_line() +
+  facet_wrap(~q_V165, labeller = "label_both", scales = "free_y", nrow = 1)
+
+new_free_R2 <- new_simulations %>%
+  ggplot(aes(time, number_per_cell(primary.R2, "primary"), color = as.factor(kprod_R2))) +
+  geom_line() +
+  facet_wrap(~q_V165, labeller = "label_both", scales = "free_y", nrow = 1)
+
+orig_free_R2 + new_free_R2 +
+  plot_layout(nrow = 2, guides= "collect") &
+  labs(y = "Free R2 (#/cell)", x = "time (s)", color = "R2 Production Rate")
+```
+
+
+## Compare levels of Free Ligand to Bound Receptors
+I compared the amount of free ligand to receptor-bound ligand at every timepoint from the model with updated parameters. 
+
+```{r}
+# pdf(here("fig", "free_vs_bound_ligand.pdf"), width = 12, height = 12)
+new_simulations %>% 
+  select(kprod_R2, q_V165, time, starts_with("primary")) %>% rowwise %>% 
+  mutate(bound_R = sum(c_across(starts_with(compartment) & contains("V165") & (contains("R1") | contains("R2") | contains("N1") | contains("N2")))),
+         total_R = sum(c_across(starts_with(compartment) & (contains("R1") | contains("R2") | contains("N1") | contains("N2")))),
+         total_V165 = sum(c_across(starts_with(compartment) & contains("V165"))),
+         free_V165 = c_across(matches(paste0(compartment, ".V165")))) %>% 
+  ggplot(aes(convert_to_pmol(free_V165, "primary"), convert_to_pmol(bound_R, "primary"))) + 
+  geom_point(aes(color = time)) +
+  facet_wrap(kprod_R2 ~ q_V165, scales = "free", labeller = "label_both") +
+  labs(x = "Free V165 (pM)", y = "Receptor-bound V165 (pM)")
+# dev.off()
+```
+
+I also plotted the steady state values of free and receptor-bound V165 from all the simulations I've run. I plotted both the total concentration of these quantities and the fraction of receptor-bound V165 vs the fraction of free V165. Neither of these fractions include matrix-bound V165, so they are not expected to sum to one.
+
+
+```{r}
+plot_R_v_free_ligand <- function(df, prop = F, R = "Receptor", compartment = "primary", scale = "free", shape = "kprod_R2",color = "q_V165"){
+  # R denotes receptor to plot on x-axis
+  
+  if(R == "Receptor"){
+    # plot all bound receptors
+    df <- df %>%
+      mutate(kprod_R2 = factor(kprod_R2), q_V165 = factor(q_V165)) %>%
+      group_by(kprod_R2, q_V165) %>%
+      filter(time == max(time)) %>%
+      rowwise %>%
+      summarise(bound_R = sum(c_across(starts_with(compartment) & contains("V165") & (contains("R1") | contains("R2") | contains("N1") | contains("N2")))),
+                total_R = sum(c_across(starts_with(compartment) & (contains("R1") | contains("R2") | contains("N1") | contains("N2")))),
+                total_V165 = sum(c_across(starts_with(compartment) & contains("V165"))),
+                free_V165 = c_across(matches(paste0(compartment, ".V165")))
+      ) %>%
+      mutate(convert_to_pmol(across(where(is.numeric)), compartment))
+  }else{
+    df <- df %>%
+      mutate(kprod_R2 = factor(kprod_R2), q_V165 = factor(q_V165)) %>%
+      group_by(kprod_R2, q_V165) %>%
+      filter(time == max(time)) %>%
+      rowwise %>%
+      summarise(bound_R = sum(c_across(starts_with(compartment) & contains(R) & contains("_V165"))),
+                total_R = sum(c_across(starts_with(compartment) & contains(R))),
+                total_V165 = sum(c_across(starts_with(compartment) & contains("V165"))),
+                free_V165 = c_across(matches(paste0(compartment, ".V165")))
+      ) %>%
+      mutate(convert_to_pmol(across(where(is.numeric)), compartment))
+  }
+  
+  if(prop){
+    # p <- df %>% ggplot(aes(bound_R/total_R, free_V165/total_V165)) +
+    #   labs(x = str_interp("Fraction of bound ${R}"), y = "Fraction of Free V165") +
+    #   facet_wrap(~q_V165,  labeller = "label_both", nrow = 1, scales = scale)
+    p <- df %>% ggplot(aes(y = bound_R/total_V165, x = free_V165/total_V165)) +
+      labs(y = str_interp("Fraction of ${R}-bound V165"), x = "Fraction of Free V165") #+
+    # facet_wrap(~q_V165,  labeller = "label_both", nrow = 1, scales = scale)
+  }else{
+    p <- df %>% ggplot(aes(y = bound_R, x = free_V165)) +
+      labs(y = str_interp("${R}-bound V165 (pM)"), x = "Free V165 (pM)") #+
+    # facet_wrap(~q_V165, labeller = "label_both", nrow = 1, scales = scale)
+  }
+  
+  p + geom_point(aes_string(shape = shape, color = color), size = 2)
+}
+```
+
+### Free VEGF versus VEGF bound to all receptors
+```{r}
+
+plot_R_v_free_ligand(orig_simulations, F) +
+  labs(title = "Original Parameters") +
+  plot_R_v_free_ligand(new_simulations, F) +
+  ggtitle("Updated Parameters") +
+  plot_layout(nrow = 1, guides = "collect") &
+  theme(legend.position = "bottom", panel.grid.major.y = element_line()) &
+  theme(legend.position = "bottom", panel.grid.major.y = element_line(),
+        legend.box = "vertical")  &
+  scale_x_log10(breaks = c(0.1, 1, 10, 100, 1000)) & 
+  scale_y_log10(breaks = c(0.1, 1, 10, 100, 1000))  
+
+plot_R_v_free_ligand(orig_simulations, T) +
+  labs(title = "Original Parameters") +
+  plot_R_v_free_ligand(new_simulations, T) +
+  ggtitle("Updated Parameters") +
+  plot_layout(nrow = 1, guides = "collect") &
+  theme(legend.position = "bottom", panel.grid.major.y = element_line(),
+        legend.box = "vertical")  &
+  coord_fixed() &
+  xlim(0,0.6) & ylim(0,0.6)
+```
+
+```{r}
+color = "log(as.numeric(as.character(kprod_R2))/convert_secretion_mol_per_cm3_tissue(as.numeric(as.character(q_V165))))"
+
+
+plot_R_v_free_ligand(orig_simulations, F,
+                     shape = NULL, color = color) +
+  labs(title = "Original Parameters") +
+  plot_R_v_free_ligand(new_simulations, F,
+                       shape = NULL, color = color) +
+  ggtitle("Updated Parameters") +
+  plot_layout(nrow = 1, guides = "collect") &
+  theme(legend.position = "bottom", panel.grid.major.y = element_line()) &
+  theme(legend.position = "bottom", panel.grid.major.y = element_line(),
+        legend.box = "vertical")  &
+  scale_x_log10(breaks = c(0.1, 1, 10, 100, 1000)) & 
+  scale_y_log10(breaks = c(0.1, 1, 10, 100, 1000)) &
+  labs(color = "log(kprod_R2/q_V165)") &
+  scale_color_gradient2() 
+
+plot_R_v_free_ligand(orig_simulations, T, color = color, shape = NULL) +
+  labs(title = "Original Parameters") +
+  plot_R_v_free_ligand(new_simulations, T, color = color, shape = NULL) +
+  ggtitle("Updated Parameters") +
+  plot_layout(nrow = 1, guides = "collect") &
+  theme(legend.position = "bottom", panel.grid.major.y = element_line(),
+        legend.box = "vertical")  &
+  coord_fixed() &
+  xlim(0,0.6) & ylim(0,0.6) &
+  labs(color = "log(kprod_R2/q_V165)") &
+  scale_color_gradient2() 
+```
+
+```{r}
+plot_R_v_free_ligand(orig_simulations, F,
+                     shape = "q_V165", color = "kprod_R2") +
+  labs(title = "Original Parameters") +
+  plot_R_v_free_ligand(new_simulations, F,
+                       shape = "q_V165", color = "kprod_R2") +
+  ggtitle("Updated Parameters") +
+  plot_layout(nrow = 1, guides = "collect") &
+  theme(legend.position = "bottom", panel.grid.major.y = element_line()) &
+  theme(legend.position = "bottom", panel.grid.major.y = element_line(),
+        legend.box = "vertical")  &
+  scale_x_log10(breaks = c(0.1, 1, 10, 100, 1000)) & 
+  scale_y_log10(breaks = c(0.1, 1, 10, 100, 1000)) 
+
+```
+
+
+### Free V165 Versus V165 bound to R2
+Within the same secretion value, increased V165-R2 formation results in less free V165. The fraction of R2-bound V165 generally decreases as free V165 increases, but there are a few parameter combinations that result in ~40% of V165 free and ~0% bound to R2.
+```{r}
+plot_R_v_free_ligand(orig_simulations, F, R= "R2") +
+  labs(title = "Original Parameters") +
+  plot_R_v_free_ligand(new_simulations, F, R= "R2") +
+  ggtitle("Updated Parameters") +
+  plot_layout(nrow = 1, guides = "collect") &
+  theme(legend.position = "bottom", panel.grid.major.y = element_line(),
+        legend.box = "vertical") &
+  scale_x_log10(breaks = c(0.1, 1, 10, 100, 1000)) & 
+  scale_y_log10(breaks = c(0.1, 1, 10, 100, 1000)) 
+
+plot_R_v_free_ligand(orig_simulations, T, R= "R2") +
+  labs(title = "Original Parameters") +
+  plot_R_v_free_ligand(new_simulations, T, R= "R2") +
+  ggtitle("Updated Parameters") +
+  plot_layout(nrow = 1, guides = "collect") &
+  theme(legend.position = "bottom", panel.grid.major.y = element_line(),
+        legend.box = "vertical") &
+  coord_fixed() &
+  xlim(0,0.6) & ylim(0,0.6)
+```
+
+### Free V165 Versus V165 bound to R1
+As free V165 increases, so does the amount of R1-bound V165. A very small proportion of V165 is bound to R1 at all simulation values. This is because R1 is mostly bound to neuropilin and V165 does not bind to R1-N.
+
+```{r}
+plot_R_v_free_ligand(orig_simulations, F, R= "R1") +
+  labs( title = "Original Parameters") +
+  plot_R_v_free_ligand(new_simulations, F, R= "R1") +
+  ggtitle("Updated Parameters") +
+  plot_layout(nrow = 1, guides = "collect") &
+  theme(legend.position = "bottom", panel.grid.major.y = element_line(),
+        legend.box = "vertical") &
+  scale_x_log10(breaks = c(0.1, 1, 10, 100, 1000)) & 
+  scale_y_log10(breaks = c(0.1, 1, 10, 100, 1000)) 
+
+plot_R_v_free_ligand(orig_simulations, T, R= "R1") +
+  labs(title = "Original Parameters") +
+  plot_R_v_free_ligand(new_simulations, T, R= "R1") +
+  ggtitle("Updated Parameters") +
+  plot_layout(nrow = 1, guides = "collect") &
+  theme(legend.position = "bottom", panel.grid.major.y = element_line(),
+        legend.box = "veritcal") &
+  xlim(0,0.6) & ylim(0,0.004)
+```
+
+### Free V165 Versus V165 bound to N1
+Binding of V165 to N1 increases as free V165 increases. The fraction of neuropilin-bound N1 decreases as free V165 increases, as we would expect.
+
+```{r}
+plot_R_v_free_ligand(orig_simulations, F, R= "N1") +
+  labs( title = "Original Parameters") +
+  plot_R_v_free_ligand(new_simulations, F, R= "N1") +
+  ggtitle("Updated Parameters") +
+  plot_layout(nrow = 1, guides = "collect") &
+  theme(legend.position = "bottom", panel.grid.major.y = element_line(),
+        legend.box = "vertical") &
+  scale_x_log10(breaks = c(0.1, 1, 10, 100, 1000)) & 
+  scale_y_log10(breaks = c(0.1, 1, 10, 100, 1000)) 
+
+plot_R_v_free_ligand(orig_simulations, T, R= "N1") +
+  labs( title = "Original Parameters") +
+  plot_R_v_free_ligand(new_simulations, T, R= "N1") +
+  ggtitle("Updated Parameters") +
+  plot_layout(nrow = 1, guides = "collect") &
+  theme(legend.position = "bottom", panel.grid.major.y = element_line(),
+        legend.box = "vertical") &
+  xlim(0,0.6) #& ylim(0,0.004)
+```
+
+### Free V165 Versus V165 bound to N2
+Binding of V165 to N2 increases as free V165 increases. The fraction of neuropilin-bound N2 decreases as free V165 increases, as we would expect.
+
+```{r}
+plot_R_v_free_ligand(orig_simulations, F, R= "N2") +
+  labs( title = "Original Parameters") +
+  plot_R_v_free_ligand(new_simulations, F, R= "N2") +
+  ggtitle("Updated Parameters") +
+  plot_layout(nrow = 1, guides = "collect") &
+  theme(legend.position = "bottom", panel.grid.major.y = element_line(),
+        legend.box = "vertical") &
+  scale_x_log10(breaks = c(0.1, 1, 10, 100, 1000)) & 
+  scale_y_log10(breaks = c(0.1, 1, 10, 100, 1000)) 
+
+plot_R_v_free_ligand(orig_simulations, T, R= "N2") +
+  labs( title = "Original Parameters") +
+  plot_R_v_free_ligand(new_simulations, T, R= "N2") +
+  ggtitle("Updated Parameters") +
+  plot_layout(nrow = 1, guides = "collect") &
+  theme(legend.position = "bottom", panel.grid.major.y = element_line(),
+        legend.box = "vertical") &
+  xlim(0,0.6) #& ylim(0,0.004)
+```
+
+
+## Contour plots
+To find the combination of V165 secretion rate and R2 production rate that results in a reasonable amount of total R2 (~3000 receptors/cell) and free V165 (I'm not sure what value we are aiming for here) in the primary compartment, I made contour plots of our updated simulations. The contours for R2 are in terms of #/cell and that of V165 are in terms of pM (Would it be better to plot in terms of pmol/cm^3 tissue?).  
+
+```{r}
+contour_df <- new_simulations_long %>% 
+  filter(compartment == "primary") %>% 
+  group_by(q_V165, kprod_R2) %>% 
+  filter(time == max(time)) %>% 
+  summarise(total_R2 = number_per_cell(sum(concentration*grepl("R2", molecule)), "primary"),
+            free_V165 = convert_to_pmol(sum(concentration*(molecule == "V165")), "primary"))
+
+```
+
+When using R2 and V165 concentrations directly taken from the model output, the larger values blow up the contours and we do not get any information for the lower quantities. Below, I plotted the points at which we actually ran simulations for reference:
+
+```{r}
+contour_df %>% 
+  ungroup %>% 
+  # filter(q_V165 !=max(q_V165), kprod_R2 != max(kprod_R2)) %>% 
+  ggplot(aes(kprod_R2, q_V165  * 1534 / (1e-5 * 6.023e23))) + 
+  geom_contour(aes(z = total_R2, color = after_stat(level)), bins = 25) + 
+  scale_color_gradient2("Total R2 (#/cell)", #limits = c(0, 4), 
+                        low = "#762A83", mid = "white", high = "#1B7837") +
+  # breaks = log(c(3, 30, 3e2, 3e3, 3e4, 3e5)),
+  # labels = function(breaks) round(exp(breaks))) +
+  
+  new_scale("color") +
+  geom_contour(aes(z = free_V165, color = after_stat(level)), bins = 25) +
+  scale_color_gradient2("Free V165 (pM)",#limits = c(0, 3),
+                        low = "#e8cced", high = "#762A83") + #,
+  # breaks = log(c(0,1,10,100,1000,10000,100000)),
+  # labels = function(breaks) round(exp(breaks))) +
+  
+  geom_point() +
+  labs(x = "Production of R2 (moles/cm^3 tissue/s)", y = "V165 Secretion (moles/cm^3 tissue/s)",
+       title = "Contour plot of Total R2 and Free V165")
+```
+
+So, I calculated the contours for V165 and R2 based on the log of their concentration and log-transformed the x and y-axes. The color bars show the concetration values converted back to the original scale (either #/cell or pM).
+```{r}
+contour_df %>% 
+  ggplot(aes(kprod_R2, q_V165  * 1534 / (1e-5 * 6.023e23))) + 
+  geom_contour(aes(z = log(total_R2), color = after_stat(level),
+                   # Mark 3000 R2:
+                   lty = after_stat(level) == after_stat(level)[which.min(abs(after_stat(level) - log(3000)))]),
+               bins = 10 ) +
+  scale_color_gradient2("Total R2 (#/cell)", 
+                        low = "#762A83", mid = "white", high = "#1B7837",#) +
+                        breaks = log(c(3, 30, 3e2, 3e3, 3e4, 3e5)),
+                        labels = function(breaks) round(exp(breaks))) +
+  
+  new_scale("color") +
+  geom_contour(aes(z = log(free_V165), color = after_stat(level)),
+               bins = 10) +
+  scale_color_gradient("Free V165 (pM)",
+                       low = "#e8cced", high = "#762A83",
+                       breaks = log(c(0,1,10,100,1000,10000,100000)),
+                       labels = function(breaks) round(exp(breaks))) +
+  # geom_point() +
+  labs(x = "Production of R2 in moles/cm^3 tissue/s", y = "V165 Secretion in moles/cm^3 tissue/s",
+       title = "Contour plot of Total R2 and Free V165 on the log scale", lty = "Total R2 near 3000") +
+  scale_x_log10() + scale_y_log10()
+```
+
+The contours intersect and thus we should be able to identify values of q_V165 and kprod_R2 that generate the desired concentrations. It's difficult to tell which contours correspond to these desired V165 and R2 concentrations, so I also plotted them individually (I tried to get number labels on the above plot but I was unsuccessful):
+
+```{r}
+contour_df %>% 
+  ggplot(aes(kprod_R2, q_V165  * 1534 / (1e-5 * 6.023e23))) + 
+  stat_contour(aes(z = log(total_R2), color = as.factor(round(exp(..level..))))) +
+  labs(x = "Production of R2 in moles/cm^3 tissue/s", y = "V165 Secretion in moles/cm^3 tissue/s",
+       title = "Contour plot of Total R2 and Free V165 on the log scale", lty = "Total R2 near 3000") +
+  scale_x_log10() + scale_y_log10() + 
+  labs(color = "Total R2 (#/cell)")
+
+contour_df %>% 
+  ggplot(aes(kprod_R2, q_V165  * 1534 / (1e-5 * 6.023e23))) + 
+  stat_contour(aes(z = log(free_V165), color = as.factor(round(exp(..level..))))) +
+  labs(x = "Production of R2 in moles/cm^3 tissue/s", y = "V165 Secretion in moles/cm^3 tissue/s",
+       title = "Contour plot of Total R2 and Free V165 on the log scale", lty = "Total R2 near 3000") +
+  scale_x_log10() + scale_y_log10() + 
+  labs(color = "Free V165 (pM)")
+```
+
