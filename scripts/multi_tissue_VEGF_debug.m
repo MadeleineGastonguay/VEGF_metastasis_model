@@ -14,7 +14,7 @@ close all
 % initconc is a nested struct with fields for each tissue and values
 % containing struct with fields for each moelulce and values denoting the
 % initial concentrations.
-[c,m,p,cnames,mnames,pnames,initconc] = declareParams_multi_tissue_VEGF();
+[c,m,p,cnames,mnames,pnames,initconc] = declareParams_multi_tissue_VEGF_debug();
 nm = length(mnames);
 nc = length(cnames);
 
@@ -23,8 +23,28 @@ nc = length(cnames);
 % file_appender = 'no_N';
 % p = alter_params(file_appender, p);
 
-% test without cross-talk between comparments
-file_appender = 'no_perm';
+% % test without cross-talk between comparments
+% file_appender = 'no_perm';
+% p = alter_params(file_appender, p);
+
+% % test with decreased lymphatic drainage and no main compartment
+% file_appender = 'no_main';
+% p = alter_params(file_appender,p);
+
+% Test with new parameters
+% file_appender = 'new_transport';
+% p = alter_params(file_appender, p);
+
+% Test with decreased lymphatic drainage for tumor
+% file_appender = 'new_lymph';
+% p = alter_params(file_appender, p);
+
+% Test with only R2
+% file_appender = 'only_R2_new_lymph';
+% p = alter_params(file_appender, p);
+
+% Test with no ligand
+file_appender = 'no_ligand_new_lymph';
 p = alter_params(file_appender, p);
 
 % % Try increased R2 production:
@@ -32,7 +52,7 @@ p = alter_params(file_appender, p);
 % % Try inreasing k_on for R2-V165
 % % p.k_on.R2_V165 = p.k_on.R2_V165*1e10;
 
-%% Initial Conditions 
+%% Initial Conditions
 
 t_end = 2*60*60;
 runVar = 0;
@@ -60,22 +80,53 @@ end
 collect_results = array2table([repelem(p.q.V165(c.primary), length(t), 1) repelem(p.k_prod.R2, length(t), 1) t y], ...
     'VariableNames', col_names);
 
-%% Test various values of secretion
-% Debug with increased values of R2 and secretion
-% secretion = [0.27, 1, 1e1, 1e2];
-secretion = [0.027];
+% %% Test various values of secretion
+% % Debug with increased values of R2 and secretion
+% secretion = [0.027, 0.27, 1, 1e1, 1e2];
+% prod = p.k_prod.R2.*[1 1e1 1e2 1e3];
+% for(q=secretion)
+%     for(kp=prod)
+%         if q == 0.027 && kp == prod(1)
+%             continue
+%         end
+%         p.q.V165 = [q, q, q];
+%         p.k_prod.R2 = kp;
+%     % run until t_end:
+%         [t,y] = multi_tissue_main_VEGF(c,p,m,y0,t_end,runVar);
+%         results = array2table([repelem(p.q.V165(c.primary), length(t), 1) repelem(p.k_prod.R2, length(t), 1) t y], ...
+%     'VariableNames', col_names);
+%         collect_results = vertcat(collect_results, results);
+%     end
+% end
+
+%% Test for no ligand but increasing kprod_R2
 prod = p.k_prod.R2.*[1e1 1e2 1e3];
-for(q=secretion)
-    for(kp=prod)
-        p.q.V165 = [q, q, q];
-        p.k_prod.R2 = kp;
+for(kp=prod)
+    p.k_prod.R2 = kp;
     % run until t_end:
-        [t,y] = multi_tissue_main_VEGF(c,p,m,y0,t_end,runVar);
-        results = array2table([repelem(p.q.V165(c.primary), length(t), 1) repelem(p.k_prod.R2, length(t), 1) t y], ...
-    'VariableNames', col_names);
-        collect_results = vertcat(collect_results, results);
-    end
+    [t,y] = multi_tissue_main_VEGF(c,p,m,y0,t_end,runVar);
+    results = array2table([repelem(p.q.V165(c.primary), length(t), 1) repelem(p.k_prod.R2, length(t), 1) t y], ...
+        'VariableNames', col_names);
+    collect_results = vertcat(collect_results, results);
 end
 
+%%
+
 writetable(collect_results, strcat("debug_results/simulation_results_debug_R2_", file_appender,".csv"));
-% writetable(collect_results, strcat("debug_results/simulation_results_debug_R2.csv"));
+
+%% Calculate fluxes for V165:
+% simulations = readtable(strcat("debug_results/simulation_results_debug_R2_", file_appender,".csv"), 'VariableNamingRule','preserve');
+simulations = collect_results;
+simulations = simulations(simulations{:,"time"} == 7200,:);
+
+collect_rates = simulations(:,1:2);
+for i=1:size(simulations,1)
+    y = simulations{i,4:size(simulations,2)};
+    p.q.V165 = ones(3,1)*collect_rates{i,"q_V165"};
+    rates = calculate_flows(y,c,p,m,"primary");
+    collect_rates(i,3:6) = rates;
+end
+collect_rates = renamevars(collect_rates, 3:6, rates.Properties.VariableNames);
+
+writetable(collect_rates, strcat("debug_results/calculate_fluxes_", file_appender,".csv"));
+

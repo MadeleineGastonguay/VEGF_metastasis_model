@@ -68,7 +68,7 @@ quick_bar <- function(df, m,convert = "#/cell", tissue = "primary", position = "
     labs(x = "", y = y_lab, fill = "Complex",
          title = str_interp("${m} in ${tissue}")) + 
     facet_wrap(~q_V165, scales = "free_y") +
-  theme(legend.position = c(1,0), legend.justification = c(1,0))
+    theme(legend.position = c(1,0), legend.justification = c(1,0))
 }
 ```
 
@@ -381,3 +381,227 @@ sec_debug3 %>% mutate(x = primary.R2_V165 + primary.R2_V165_N1 + primary.R2_V165
        title = "Steady state concentrations at varying parameter values")+
   theme(legend.position = c(1,0), legend.justification = c(1,0))
 ```
+
+## Compare results at varying parameter configurations
+
+```{r}
+sec_debug2 %>% 
+  group_by(q_V165, kprod_R2) %>% 
+  filter(time == max(time)) %>% 
+  select(q_V165, kprod_R2, starts_with("primary")) %>% 
+  rowwise %>% 
+  mutate(bound_receptors = primary.R1_V165 + primary.R2_V165 + primary.R2_V165_N1 + primary.R2_V165_N2 + primary.N2_V165 + primary.N1_V165) %>%
+  ggplot(aes(bound_receptors,  color =as.factor(q_V165), shape = as.factor(kprod_R2)))  +
+  geom_point(data = . %>% mutate(facet = "Free Ligand"), aes(y = primary.V165)) + 
+  geom_point(data = . %>% mutate(facet = "Free Receptor"), aes(y = primary.R1 + primary.N1 + primary.N2 + primary.R2)) +
+  scale_x_log10() + scale_y_log10() + 
+  facet_wrap(~facet, scales = "free")
+```
+```{r}
+
+sec_debug2 %>% 
+  group_by(q_V165, kprod_R2) %>% 
+  filter(time == max(time)) %>% 
+  select(q_V165, kprod_R2, starts_with("primary")) %>% 
+  rowwise %>% #names
+  summarise(
+    total_receptors = sum(c_across(contains("N1")|contains("N2")|contains("R1")|contains("R2"))),
+    total_ligand = sum(c_across(contains("V165") & starts_with("primary"))),
+    bound_receptors = primary.R1_V165 + primary.R2_V165 + primary.R2_V165_N1 + primary.R2_V165_N2 + primary.N2_V165 + primary.N1_V165 + primary.Mebm_V165_R1 + primary.Mebm_V165_R2 ,
+    free_receptors = primary.R1 + primary.R2 + primary.N1 + primary.N2 + primary.R1_N1 + primary.R1_N2,
+    bound_ligand = primary.R1_V165 + primary.R2_V165 + primary.R2_V165_N1 + primary.R2_V165_N2 + primary.N2_V165 + primary.N1_V165 + primary.Mebm_V165_R1 + primary.Mebm_V165_R2+ primary.Mebm_V165 + primary.Mecm_V165 + primary.Mpbm_V165,
+    free_ligand = primary.V165 
+  ) %>% 
+  ggplot(aes(bound_receptors, free_ligand/total_ligand, color =as.factor(q_V165), shape = as.factor(kprod_R2)))  +
+  geom_point() +
+  facet_wrap(~q_V165, scales = "free")
+# geom_point(data = . %>% mutate(facet = "Free Ligand"), aes(y = free_ligand/total_ligand)) +
+# geom_point(data = . %>% mutate(facet = "Free Receptor"), aes(y = free_receptors/total_receptors)) +
+# geom_smooth(data = . %>% mutate(facet = "Free Receptor"), aes(y = free_receptors/total_receptors)) +
+# facet_wrap(~facet, scales = "free") +
+# geom_abline(slope = -1, intercept = 1)
+
+baseline <- sec_debug3 %>% 
+  filter(kprod_R2 == min(kprod_R2)) %>% 
+  group_by(q_V165, kprod_R2) %>% 
+  filter(time == max(time)) %>% rowwise %>% 
+  mutate(total_R2 = sum(c_across(contains("R2") & starts_with("primary"))),
+         total_V165 = sum(c_across(contains("V165") & starts_with("primary")))) %>% 
+  ungroup %>% 
+  select(q_V165, baseline_total_R2 = total_R2, baseline_total_V165 = total_V165)
+
+sec_debug3 %>% 
+  group_by(q_V165, kprod_R2) %>% 
+  filter(time == max(time)) %>% 
+  rowwise %>% 
+  mutate(total_R2 = sum(c_across(contains("R2") & starts_with("primary"))),
+         total_V165 = sum(c_across(contains("V165") & starts_with("primary")))) %>% 
+  left_join(baseline) %>% 
+  # ggplot(aes(kprod_R2/1.4e-17, total_R2/baseline_total_R2, color = as.factor(q_V165), shape = as.factor(kprod_R2))) + 
+  ggplot(aes(kprod_R2/1.4e-17, baseline_total_V165/total_V165, color = as.factor(q_V165), shape = as.factor(kprod_R2))) + 
+  geom_point() +
+  geom_abline()
+
+```
+
+## Calculating fluxes in and out
+```{r}
+fluxes <- read_csv(here("debug_results", "calculate_fluxes.csv"))
+fluxes <- fluxes %>% mutate(q_V165 = as.factor(q_V165), kprod_R2 = as.factor(kprod_R2),
+                            convert_to_pmol(across(where(is.numeric)), "primary"))
+
+temp2 <- read_csv(here("debug_results", "calculate_fluxes.csv")) %>% 
+  mutate(q_V165 = as.factor(q_V165), kprod_R2 = as.factor(kprod_R2)) %>% pivot_longer(4:6) %>% 
+  mutate(normalized_value = value/Secretion) %>% 
+  select(-value) %>% 
+  pivot_wider(values_from = normalized_value, names_from = "name") %>% 
+  mutate(Secretion = Secretion/Secretion)
+
+temp2 %>% 
+  pivot_longer(4:6) %>% 
+  ggplot(aes(kprod_R2, abs(value), color = name)) + 
+  geom_point(size = 3) + 
+  facet_wrap(~q_V165)
+
+fluxes %>% ggplot(aes(Secretion, abs(Internalization), shape = kprod_R2)) + 
+  geom_point() + geom_abline() + #coord_fixed() +
+  labs(x = "Secretion (pM/s)", y = "Internalization (pM/s)") + 
+  facet_wrap(~kprod_R2, scales = "free")
+
+fluxes %>% filter(Secretion < 40) %>% 
+  ggplot(aes(Secretion, Permeability, shape = kprod_R2)) + 
+  geom_point() + geom_abline() + #coord_fixed() +
+  labs(x = "Secretion (pM/s)", y = "Permeability (pM/s)")  
+# facet_wrap(~kprod_R2, scales = "free")
+
+fluxes %>% 
+  ggplot(aes(Secretion, abs(Lymphatic_drainage), shape = kprod_R2)) + 
+  geom_point() + geom_abline() + #coord_fixed() +
+  labs(x = "Secretion (pM/s)", y = "Lymphatic Drainage (pM/s)")  
+
+fluxes %>% 
+  ggplot(aes(Secretion, abs(Internalization) + abs(Lymphatic_drainage) + Permeability, shape = kprod_R2, color = q_V165)) + 
+  geom_point() + geom_abline()
+
+fluxes %>% 
+  filter(Secretion < 1) %>% 
+  ggplot(aes(Secretion, Internalization, shape = kprod_R2)) + 
+  geom_point() + geom_abline() + coord_fixed() +
+  labs(x = "Secretion (pM/s)", y = "Internalization (pM/s)")
+
+fluxes %>% 
+  GGally::ggpairs(columns = 3:6, mapping = aes(color = q_V165, shape = kprod_R2)) +
+  geom_abline()
+```
+
+## Try with updated transport parameters for primary tumor
+```{r}
+fluxes2 <- read_csv(here("debug_results", "calculate_fluxes_new_transport.csv"))
+fluxes2 <- fluxes2 %>% mutate(q_V165 = as.factor(q_V165), kprod_R2 = as.factor(kprod_R2))
+
+fluxes2 %>% 
+  ggplot(aes(Secretion, abs(Lymphatic_drainage), shape = kprod_R2)) + 
+  geom_point() + geom_abline() #+ #coord_fixed() +
+# labs(x = "Secretion (pM/s)", y = "Lymphatic Drainage (pM/s)")  
+
+fluxes2 %>% 
+  ggplot(aes(Secretion, Permeability, shape = kprod_R2)) + 
+  geom_point() + geom_abline() 
+```
+```{r}
+temp <- read_csv(here("debug_results", "calculate_fluxes_no_main.csv")) %>% 
+  mutate(q_V165 = as.factor(q_V165), kprod_R2 = as.factor(kprod_R2)) %>% pivot_longer(4:6) %>% 
+  mutate(normalized_value = value/Secretion) %>% 
+  select(-value) %>% 
+  pivot_wider(values_from = normalized_value, names_from = "name") %>% 
+  mutate(Secretion = Secretion/Secretion)
+
+temp %>% 
+  pivot_longer(4:6) %>% 
+  ggplot(aes(kprod_R2, abs(value), color = name)) + 
+  geom_point(size = 3) + 
+  facet_wrap(~q_V165)
+```
+
+```{r}
+new_transport <- read_csv(here("debug_results", "simulation_results_debug_R2_no_main.csv"))
+
+new_transport_long <- new_transport %>% 
+  pivot_longer(!c(q_V165, kprod_R2, time), values_to = "concentration",
+               names_to = c("compartment", "molecule"), names_sep = "[.]")
+
+
+
+new_transport_long %>% 
+  # filter(time == max(time), grepl("R2", molecule), compartment == "primary", molecule != "R2") %>% 
+  filter(time == max(time), grepl("R2", molecule), compartment == "primary") %>% 
+  ggplot(aes(as.factor(q_V165), number_per_cell(concentration, "primary"), fill = molecule)) + 
+  geom_bar(stat = "identity", position = "stack") +
+  facet_wrap(~kprod_R2, scales = "free_y") + 
+  labs(x = "V165 Secretion (#/cell)", y = "R2 (#/cell)")
+
+new_transport_long %>% 
+  filter(time == max(time), grepl("R1", molecule), compartment == "primary") %>% 
+  ggplot(aes(as.factor(q_V165), number_per_cell(concentration, "primary"), fill = molecule)) + 
+  geom_bar(stat = "identity", position = "fill") +
+  facet_wrap(~kprod_R2) + 
+  labs(x = "V165 Secretion (#/cell)", y = "R1 (#/cell)")
+
+new_transport_long %>% 
+  group_by(q_V165, kprod_R2) %>% 
+  filter(time == max(time), grepl("V165", molecule), compartment == "primary") %>% 
+  ggplot(aes(as.factor(kprod_R2), convert_to_pmol(concentration, "primary"), fill = molecule)) + 
+  geom_bar(stat = "identity", position = "fill", aes(color = grepl("R2", molecule))) +
+  facet_wrap(~q_V165, scales = "free_y") + 
+  labs(x = "R2 Production (moles/cm^3 tissue)", y = "V165 (pM)") + 
+  scale_color_manual(values = c("TRUE" = "black", "FALSE" = NA))
+
+new_transport_long %>% 
+  group_by(q_V165, kprod_R2) %>% 
+  filter(time == max(time), grepl("V165", molecule), compartment == "primary") %>% 
+  ggplot(aes(as.factor(kprod_R2), convert_to_pmol(concentration, "primary"), fill = molecule)) + 
+  geom_bar(stat = "identity", position = "stack", aes(color = grepl("R2", molecule))) +
+  facet_wrap(~q_V165, scales = "free_y") + 
+  labs(x = "R2 Production (moles/cm^3 tissue)", y = "V165 (pM)") + 
+  scale_color_manual(values = c("TRUE" = "black", "FALSE" = NA))
+
+new_transport %>%
+  ggplot(aes(time, convert_to_pmol(primary.V165, "primary"),
+             color = as.factor(kprod_R2))) +
+  geom_line() +
+  labs(x = "time", y = "V165 pM",
+       title = "Concentration of Free V165 in Primary tumor",
+       color = "kprod_R2") +
+  facet_wrap(~q_V165, scales = "free_y", labeller = "label_both")+
+  theme(legend.position = c(1,0), legend.justification = c(1,0))
+```
+```{r}
+new_transport %>%
+  mutate(kprod_R2 = factor(kprod_R2), q_V165 = factor(q_V165)) %>%
+  group_by(kprod_R2, q_V165) %>% 
+  filter(time == max(time)) %>% 
+  rowwise %>% 
+  mutate(bound_R2 = convert_to_pmol(sum(c_across(starts_with("primary") & contains("R2") & contains("_"))), "primary"),
+         free_V165 = convert_to_pmol(primary.V165, "primary")) %>% 
+  ggplot(aes(bound_R2, free_V165, color = q_V165)) + 
+  geom_point(aes(shape = kprod_R2)) +
+  facet_wrap(~q_V165, scales = "free") +
+  labs(x = "Bound R2 (pM)", y = "Free V165 (pM)") 
+
+new_transport %>%
+  mutate(kprod_R2 = factor(kprod_R2), q_V165 = factor(q_V165)) %>%
+  group_by(kprod_R2, q_V165) %>% 
+  filter(time == max(time)) %>% 
+  rowwise %>% 
+  mutate(bound_R2 = convert_to_pmol(sum(c_across(starts_with("primary") & contains("R2") & contains("_"))), "primary"),
+         free_V165 = convert_to_pmol(primary.V165, "primary"),
+         total_R2 = convert_to_pmol(sum(c_across(starts_with("primary") & contains("R2"))), "primary"),
+         total_V165 = convert_to_pmol(sum(c_across(starts_with("primary") & contains("V165"))), "primary")) %>% 
+  ggplot(aes(bound_R2/total_R2, free_V165/total_V165, color = q_V165)) + 
+  geom_point(aes(shape = kprod_R2), size = 3) +
+  facet_wrap(~q_V165) +
+  labs(x = "Bound R2 (pM)", y = "Free V165 (pM)") 
+
+
+```
+
