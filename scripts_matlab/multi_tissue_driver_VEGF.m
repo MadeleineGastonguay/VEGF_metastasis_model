@@ -14,7 +14,9 @@ close all
 % initconc is a nested struct with fields for each tissue and values
 % containing struct with fields for each moelulce and values denoting the
 % initial concentrations.
-[c,m,p,cnames,mnames,pnames,initconc] = declareParams_multi_tissue_VEGF();
+
+n_met = 1;% Define the number of metastases
+[c,m,p,cnames,mnames,pnames,initconc] = declareParams_multi_tissue_VEGF(n_met);
 nm = length(mnames);
 nc = length(cnames);
 
@@ -34,15 +36,6 @@ end
 [t,y] = multi_tissue_main_VEGF(c,p,m,y0,t_end,runVar);
 
 %% Write out results to a csv file
-col_names = cell(nc*nm + 2,1);
-col_names{1} = 'q_V165';
-col_names{2} = 'time';
-for(i = 1:nc)
-    for(j = 1:nm)
-        col_names{(i-1)*nm + j + 2} = strcat(cnames{i}, '.', mnames{j});
-    end
-end
-
 time = repmat(t, nc, 1);
 compartment = repelem(cnames, length(t));
 
@@ -55,7 +48,7 @@ for i=1:nm
     end
     df.(molecule) = temp;
 end
-writetable(df, "simulation_results.csv");
+writetable(df, "results/simulations_one_metasatsis.csv");
 
 
 

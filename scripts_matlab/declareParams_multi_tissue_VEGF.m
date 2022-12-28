@@ -1,13 +1,14 @@
-function [c,m,p,cnames,mnames,pnames,initconc] = declareParams_multi_tissue_VEGF_debug();
+function [c,m,p,cnames,mnames,pnames,initconc] = declareParams_multi_tissue_VEGF(n_met);
 %% Declare tissue compartments (and order in arrays)
-c.blood = 1;
+c.blood = 1; % Model as written requires the blood compartment to be 1
 c.main = 2;
 c.primary = 3;
-% c.met1 = 4;
-% c.met2 = 5;
-% c.met3 = 6;
-% c.met4 = 7;
-% c.met5 = 8;
+% Add as many metastases as you'd like: 
+% (Note that you will have to adjust tissue-specific parameter values
+% below or they will automatically be set to the primary tumor value)
+for i=1:n_met
+    c.(strcat('met', num2str(i))) = i + 3;
+end
 
 cnames = fieldnames(c);
 
@@ -49,19 +50,6 @@ mnames = fieldnames(m);
 % BINDING
         
 % Ligand:Receptor (source is Lindsey's 2017 paper)
-% units in M unless noted otherwise
-% p.k_d.R1_V165 = 3.3E-11;
-% p.k_d.R2_V165 = 1.0E-10;
-% p.k_d.N1_V165 = 1.2E-9;
-% p.k_d.N2_V165 = 1.2E-9; % assume same as binding to N2
-% p.k_d.Mebm_V165 = 6.1E-8; %ligand binding to matrix
-% p.k_d.R1_Mebm_V165 = 3.3E-11; %M-bound ligand binding to R1
-% p.k_d.R2_Mebm_V165 = 1.0E-10; %M-bound ligand binding to R2
-% p.k_d.R1_V165_Mebm = 6.1E-8; %M binding to ligand-R1 complex
-% p.k_d.R2_V165_Mebm = 6.1E-8; %M binding to ligand-R2 complex
-% p.k_d.N1_V165_R2 = 1.0E-17; %R2 binding to ligand-N1, unit: moles/cm^2
-% p.k_d.R2_V165_N1 = 1.0E-17; %N1 binding to ligand-R2, unit: moles/cm^2
-
 % units in M-1s-1 unless noted otherwise
 p.k_on.R1_V165 = 3.0E7;
 p.k_on.R2_V165 = 1.0E7;
@@ -91,12 +79,6 @@ p.k_off.N1_V165_R2 = 1.0E-3; %R2 binding to ligand-N1
 p.k_off.R2_V165_N1 = 1.0E-3; %N1 binding to ligand-R2
 p.k_off.N2_V165_R2 = 1.0E-3; %R2 binding to ligand-N1. Assumed same as N1.
 p.k_off.R2_V165_N2 = 1.0E-3; %N1 binding to ligand-R2. Assumed same as N1.
-
-% kons = fieldnames(p.k_off);
-% for i=1:length(kons)
-%     p.k_on.(kons{i}) = 0;
-%     p.k_off.(kons{i}) = 0;
-% end
 
 % Receptor Coupling
 % units: (moles/cm^2 s)^-1
@@ -135,28 +117,19 @@ p.k_int.N2_R2_V = 3.12E-2; %assume same as N1
 p.k_int.N1_R1 = 2.6E-3;
 p.k_int.N2_R1 = 2.6E-3; %assume same as N1
 
-% % remove internalization for debugging
-% kints = fieldnames(p.k_int);
-% for i=1:length(kints)
-%     if(kints{i} ~= "R2")
-%         p.k_int.(kints{i}) = 0;
-%     end
-% end
-
-% secretion: Tissue specific
+% secretion
 p.q.V165 = ones(length(cnames), 1)*0.027; % source: Bender 2015, units: #/cell/sec
-% p.q.V165 = ones(length(cnames), 1)*0.27; % Debugging by increasing secretion
 
 % Lymphatic drainage: tissue specific 
-p.k_l = zeros(length(cnames),1);
-p.k_l(c.main) = 0.1418; %cm^3/s 
-p.k_l(c.primary) = 1.79e-5; %cm^3/s %Source: Feilim claculated it
+p.k_l = ones(length(cnames),1)*1.79e-5; %cm^3/s %Source: Feilim claculated it
+p.k_l(c.blood) = 0;
+p.k_l(c.main) = 0.1418; %cm^3/s %%NOTE: this id from Lindsey's paper, but I think it needs to be re-calculated as we did for the primary tumor
 
 % Permeability parameters: depend on tissue but assumed to be the same for
 % each molecule. unit: cm/s
-p.k_p = zeros(length(cnames),1);
+p.k_p = ones(length(cnames),1)*4E-7; %Source: Stefanini 2010
+p.k_p(c.blood) = 0;
 p.k_p(c.main) = 4.39E-8;
-p.k_p(c.primary) = 4E-7; %Source: Stefanini 2010
 
 % Clearance from blood: assumed same for all molecules
 p.k_cl = 1.08E-3;
@@ -165,32 +138,28 @@ p.k_cl = 1.08E-3;
 
 % Comparment volumes
 % units: cm^3
-p.U = ones(length(cnames),1);
+p.U = ones(length(cnames),1)*6.4; %taken from prostate tumor paper
 p.U(c.blood) = 5000; %5 Litres = 5000 cm^3
 p.U(c.main) = 60453;
-p.U(c.primary) = 6.4; %taken from prostate tumor paper
 
 % Fraction of interstitial space or plasma
-p.K_AV = zeros(length(cnames),1);
+p.K_AV = ones(length(cnames),1)*0.58;%From Bender 2015
 p.K_AV(c.blood) = 0.6;
 p.K_AV(c.main) = 0.0816; %From Stephanini 2008
-p.K_AV(c.primary) = 0.58; %From Bender 2015
 
 % Parameters to convert between measured receptor levels of number per cell
 % to moles/cm3 tissue:
 
 % Surface area to volume ratio of endothelial cells
-p.ESAV = ones(length(cnames),1);
+p.ESAV = ones(length(cnames),1)*105; %cm^2/cm^3 tissue % Source: Bender 2015
 p.ESAV(c.main) = 73; %cm^2/cm^3 tissue 
-p.ESAV(c.primary) = 105; %cm^2/cm^3 tissue % Source: Bender 2015
 
 % Surface area to volume ratio of parenchyma
-p.PSAV = [0 611 1534];
+p.PSAV = ones(length(cnames),1)*1534; %From Bender 2015
+p.PSAV(c.main) = 611;
 
 % Endothelial cell surface area
-p.ECSA = ones(length(cnames), 1);
-p.ECSA(c.main) = 1E-5; %cm^2/EC 
-p.ECSA(c.primary) = 1E-5; %cm^2/EC 
+p.ECSA = ones(length(cnames), 1)*1E-5; %cm^2/EC 
 
 % Avogadro's number
 p.N_av = 6.023E23; %molecules/mole
@@ -205,9 +174,8 @@ p.gamma = 1;
 % Assume Mebm wihtin 25nm of cell surface is accessible to surface
 % resceptors
 % calculate as 25nm/EBM Thickness
-p.f = ones(length(cnames),1);
+p.f = ones(length(cnames),1)*25/50;%EBM thickness taken from Mac Gabhann 2006
 p.f(c.main) = 0.286;
-p.f(c.primary) = 25/50; %EBM thickness taken from Mac Gabhann 2006
 
 pnames = {};
 pcat = fieldnames(p);
@@ -237,18 +205,6 @@ initconc.primary.Mecm = 2.15E-11;
 initconc.primary.Mebm = 2E-12;
 initconc.primary.Mpbm = 2E-11;
 
-% % Convert target receptor levels to concentrations
-% initconc.main.R1 = 3750*p.ESAV(c.main)/(p.N_av*p.ECSA(c.main));
-% initconc.primary.R1 = 3750*p.ESAV(c.primary)/(p.N_av*p.ECSA(c.primary));
-% 
-% initconc.main.R2 = 300*p.ESAV(c.main)/(p.N_av*p.ECSA(c.main));
-% initconc.primary.R2 = 300*p.ESAV(c.primary)/(p.N_av*p.ECSA(c.primary));
-% 
-% initconc.main.N1 = 20000*p.ESAV(c.main)/(p.N_av*p.ECSA(c.main));
-% initconc.primary.N1 = 20000*p.ESAV(c.primary)/(p.N_av*p.ECSA(c.primary));
-% 
-% initconc.main.N2 = initconc.main.N1;
-% initconc.primary.N2 = initconc.primary.N1;
 
 
 return
